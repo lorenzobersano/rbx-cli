@@ -150,6 +150,32 @@ sync, beat jump and loops all work. Every source track had an embedded cover.
 A drum and bass track came out at 174 BPM where rekordbox says 87; for mixing
 drum and bass the double tempo is arguably the right one.
 
+## 8. A whole library with rbx-cli rebuild (2026-10-17)
+
+`rbx-cli rebuild` of the whole rekordbox stick: 1,210 tracks, 69 folders and
+playlists (the largest has 206 tracks), 1,209 covers and 240 hot and memory
+cues, written in 26 minutes (about 0.9 s of analysis per track, then 6.5 GB of
+audio copied over USB 3). Compared with the source stick:
+
+- the playlist tree, the order of folders and playlists, and every playlist's
+  tracks and their order are identical;
+- every title, artist, album, genre, label, comment, rating, colour, year,
+  date added and track number is identical, and so are the covers, byte for
+  byte;
+- every cue has the same slot, type, position, loop end and comment. Hot cues
+  that have no colour in rekordbox get rbxport's default colour for their
+  slot;
+- BPM: the same as rekordbox on 1,136 tracks, double on 36 (drum and bass and
+  jungle), half on 3, different on 35 (8 of which rekordbox had not
+  analysed);
+- rbxport renamed 33 audio files (to avoid two tracks sharing an ANLZ folder)
+  and dropped trailing dots from folder names, for FAT compatibility. Players
+  find them through the database, so this is invisible.
+
+On the NXS2 everything checked behaves as on the original stick: the tree,
+the order, title and info, covers, keys, waveforms, cues, and browsing by
+artist, album, genre and key.
+
 ## Beat grid estimation
 
 Before switching to rbxport's analysis, the prototype had its own constant-tempo

@@ -18,7 +18,8 @@ inspection and comparison tools.
 
 > **Status.** Tested on a **CDJ-2000NXS2** with an HFS+ stick (2026-10-17):
 > browsing, track title and info, key, artwork, coloured waveforms, beat grid,
-> sync, beat jump and loops all work. Other players and FAT32/exFAT sticks have
+> sync, beat jump and loops all work, including on a 1,210-track library
+> rebuilt with `rbx-cli rebuild`. Other players and FAT32/exFAT sticks have
 > not been tested with `rbx-cli` (rbxport itself targets every player rekordbox
 > supports). Use a spare stick and keep backups.
 
