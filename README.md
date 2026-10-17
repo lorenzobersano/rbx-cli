@@ -70,7 +70,8 @@ rbx-cli export ~/Music/Saturday /Volumes/USB --playlist "Saturday"
   wrote, so `export` reads the cues back from the files whose bytes no longer
   match and exports them with the track. `rbx-cli player-edits USB` lists
   those tracks without writing anything. Grid edits made on a player are not
-  kept.
+  kept. rbxport gives a hot cue without a colour its slot's default colour;
+  a hot loop without one is exported orange, as a player shows it.
 - `--cues DIR` also keeps each track's cues in DIR (one JSON file per track)
   and exports them to every stick: a cue set on one stick reaches the others
   at their next export, and so does deleting it. A track changed on two

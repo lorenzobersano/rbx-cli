@@ -21,6 +21,22 @@ use serde_json::json;
 
 use crate::Result;
 
+/// rbxport's device palette index for #ff8c00, the orange a player paints a
+/// hot loop that has no colour of its own.
+const LOOP_ORANGE: u8 = 36;
+
+/// What a player shows for a cue without a colour, made explicit. rbxport
+/// writes such a hot cue in its slot's default colour (A pink, B blue, C
+/// green, D violet), which would turn a player's orange loops into those.
+fn player_colours(mut cues: Vec<ExportCue>) -> Vec<ExportCue> {
+    for cue in &mut cues {
+        if cue.kind != 0 && cue.loop_time_ms.is_some() && cue.color_code == 0 {
+            cue.color_code = LOOP_ORANGE;
+        }
+    }
+    cues
+}
+
 /// The cues in a track's `PCO2` (the `.EXT`, or the `.DAT` when there is
 /// none), as `rbl_export` takes them.
 pub fn read(dat: &Path) -> Vec<ExportCue> {
@@ -92,6 +108,8 @@ impl Cues {
     }
 
     /// The cues to export with this track: None keeps what its analysis holds.
+    /// The store keeps them as the player wrote them; colours a player leaves
+    /// out are filled in only for the export.
     pub fn for_track(&mut self, path: &Path, id: u64) -> Result<Option<Vec<ExportCue>>> {
         let source = path.to_string_lossy();
         let on_stick = self.stick.get(source.as_ref());
@@ -99,10 +117,10 @@ impl Cues {
             let cues = read(&t.dat);
             self.save(path, id, &cues)?;
             self.from_player.push(source.into_owned());
-            return Ok(Some(cues));
+            return Ok(Some(player_colours(cues)));
         }
         if let Some(cues) = self.load(id) {
-            return Ok(Some(cues));
+            return Ok(Some(player_colours(cues)));
         }
         // Cues the stick held before there was a store, or with no store.
         let cues = on_stick.map(|t| read(&t.dat)).unwrap_or_default();
@@ -110,7 +128,7 @@ impl Cues {
             return Ok(None);
         }
         self.save(path, id, &cues)?;
-        Ok(Some(cues))
+        Ok(Some(player_colours(cues)))
     }
 
     fn file(&self, id: u64) -> Option<PathBuf> {
