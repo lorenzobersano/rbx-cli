@@ -64,6 +64,22 @@ rbx-cli export ~/Music/Saturday /Volumes/USB --playlist "Saturday"
   rekordbox or another tool has not been tried with `rbx-cli`: start from an
   empty stick.
 
+### Rebuild a rekordbox stick
+
+```sh
+rbx-cli rebuild /Volumes/REKORDBOX /Volumes/USB [--key camelot|classic] [--limit N]
+```
+
+Writes a rekordbox stick again, 1:1 in everything you curated: every track,
+the playlist tree with its folders, playlist and track order, titles,
+artists, albums, genres, labels, comments, ratings, colours, dates, covers and
+hot and memory cues all come from the source stick. What an analysis produces
+(beat grid, BPM, key, waveforms) is computed again by rbxport. `--limit N`
+rebuilds only the first N tracks, to try it quickly.
+
+The source must hold the audio (a rekordbox USB export does). Hot cues that
+have no colour in rekordbox get rbxport's default colour for their slot.
+
 ### Analyse files
 
 ```sh
@@ -148,7 +164,7 @@ a double-time drum and bass grid. Its key matched rekordbox's on 8 of 20.
 rbxport's own (`src-tauri/src/analysis.rs` and `commands.rs` in its
 repository). `src/usb.rs` implements `inspect` and `validate`; it reads the
 page structure of `export.pdb` itself, because `rbl-pdb` only decodes rows.
-`src/compare.rs` implements the comparisons.
+`src/compare.rs` implements the comparisons and `src/rebuild.rs` the rebuild.
 
 Each cover is written at 80×80 and 240×240, the sizes rekordbox uses, as
 `artwork_s.jpg`/`artwork_m.jpg` next to the source image, where `rbl-export`

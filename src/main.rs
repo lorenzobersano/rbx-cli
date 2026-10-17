@@ -2,6 +2,7 @@
 //!
 //!     rbx-cli analyse FILE... [--preset normal|dynamic] [--beats]
 //!     rbx-cli export SOURCE DESTINATION [--playlist NAME] [--preset ...] [--key camelot|classic]
+//!     rbx-cli rebuild REKORDBOX_USB DESTINATION [--preset ...] [--key camelot|classic]
 //!     rbx-cli inspect USB [--tracks 3] [--anlz 3]
 //!     rbx-cli validate USB [--json]
 //!     rbx-cli compare-grid USB [--tracks 40] [--skip 3] [--paths FILE...] [--json]
@@ -13,7 +14,8 @@
 //! playlist per folder of SOURCE, or one called --playlist with every track.
 //! It prints the export report as JSON. Progress goes to stderr. `inspect`
 //! and `validate` read an export (`usb.rs`); the `compare-*` commands set
-//! rbxport's analysis against what rekordbox wrote on a USB (`compare.rs`).
+//! rbxport's analysis against what rekordbox wrote on a USB (`compare.rs`);
+//! `rebuild` writes a rekordbox USB again with rbxport's analysis (`rebuild.rs`).
 //!
 //! The glue between the crates follows rbxport's own (`src-tauri/src/analysis.rs`
 //! and `commands.rs`), minus its master.db.
@@ -29,6 +31,7 @@ use lofty::tag::{Accessor, ItemKey};
 use serde_json::json;
 
 mod compare;
+mod rebuild;
 mod usb;
 
 /// rekordbox's analysis decodes at most half an hour, as rbxport's does.
@@ -70,6 +73,21 @@ enum Command {
         /// Library folder for a blank volume; auto picks .PIONEER on HFS+.
         #[arg(long, value_enum, default_value_t = Root::Auto)]
         root: Root,
+    },
+    /// Write a rekordbox USB again: same tracks, playlist tree, metadata,
+    /// covers and cues, with rbxport's beat grid, key and waveforms.
+    Rebuild {
+        source: PathBuf,
+        destination: PathBuf,
+        #[arg(long, value_enum, default_value_t = Preset::Normal)]
+        preset: Preset,
+        #[arg(long, value_enum, default_value_t = KeyNotation::Camelot)]
+        key: KeyNotation,
+        #[arg(long, value_enum, default_value_t = Root::Auto)]
+        root: Root,
+        /// Only the first N tracks, to try a rebuild quickly.
+        #[arg(long)]
+        limit: Option<usize>,
     },
     /// Summarise an export: tables and pages, tracks, playlists, ANLZ tags, validation.
     Inspect {
@@ -160,6 +178,9 @@ fn main() {
         Command::Export { source, destination, playlist, preset, key, root } => {
             export(&source, &destination, playlist.as_deref(), preset, key, root)
         }
+        Command::Rebuild { source, destination, preset, key, root, limit } => {
+            rebuild::rebuild(&source, &destination, preset, key, root, limit)
+        }
         Command::Inspect { usb, tracks, anlz } => usb::inspect(&usb, tracks, anlz),
         Command::Validate { usb, json } => usb::validate(&usb).map(|report| {
             if json {
@@ -229,6 +250,17 @@ fn analyse_files(files: &[PathBuf], preset: Preset, with_beats: bool) -> Result<
         println!("{out}");
     }
     Ok(())
+}
+
+fn key_name(analysis: &rbl_analysis::Analysis, notation: KeyNotation) -> String {
+    analysis.key.as_ref().map_or_else(String::new, |k| match notation {
+        KeyNotation::Classic => k.name.clone(),
+        KeyNotation::Camelot => k.camelot(),
+    })
+}
+
+fn bpm_x100(analysis: &rbl_analysis::Analysis) -> u32 {
+    (analysis.tempo.bpm * 100.0).round().clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
 /// The three ANLZ files for an analysis, as `rbl_export` takes them.
@@ -400,16 +432,13 @@ fn export(source: &Path, destination: &Path, playlist: Option<&str>, preset: Pre
             }
             None => None,
         };
-        let key = a.analysis.key.as_ref().map_or_else(String::new, |k| match notation {
-            KeyNotation::Classic => k.name.clone(),
-            KeyNotation::Camelot => k.camelot(),
-        });
+        let key = key_name(&a.analysis, notation);
         let title = if tags.title.is_empty() {
             path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
         } else {
             tags.title.clone()
         };
-        let bpm_x100 = (a.analysis.tempo.bpm * 100.0).round().clamp(0.0, f64::from(u32::MAX)) as u32;
+        let bpm_x100 = bpm_x100(&a.analysis);
         eprintln!(
             "[{}/{}] {} - {}: {:.2} BPM, {}, {:.1}s",
             n + 1,
@@ -470,9 +499,20 @@ fn export(source: &Path, destination: &Path, playlist: Option<&str>, preset: Pre
             ..Default::default()
         })
         .collect();
+    write_export(destination, &tracks, &playlists, root, failed)
+}
+
+/// Writes the library with `rbl_export`, verifies it, and prints the report.
+fn write_export(
+    destination: &Path,
+    tracks: &[rbl_export::SourceTrack],
+    playlists: &[rbl_export::SourcePlaylist],
+    root: Root,
+    not_analysed: Vec<serde_json::Value>,
+) -> Result<()> {
     let options = rbl_export::ExportOptions { root: root_for(destination, root), ..Default::default() };
     let mut last_stage = "";
-    let report = rbl_export::export_with_options(destination, &tracks, &playlists, &[], &options, &mut |p| {
+    let report = rbl_export::export_with_options(destination, tracks, playlists, &[], &options, &mut |p| {
         if p.stage != last_stage {
             eprintln!("export: {}", p.stage);
             last_stage = p.stage;
@@ -494,10 +534,12 @@ fn export(source: &Path, destination: &Path, playlist: Option<&str>, preset: Pre
             "one_library": report.one_library,
             "verified": report.verified,
             "verify_ok": check.is_ok(),
+            "hot_cues": check.hot_cues,
+            "memory_cues": check.memory_cues,
             "skipped": report.skipped,
             "failed": report.failed,
             "warnings": report.warnings.iter().map(|w| json!({"title": w.title, "reason": w.reason, "detail": w.detail})).collect::<Vec<_>>(),
-            "not_analysed": failed,
+            "not_analysed": not_analysed,
             "elapsed_ms": report.elapsed_ms,
         })
     );
