@@ -57,7 +57,13 @@ rbx-cli export ~/Music/Saturday /Volumes/USB --playlist "Saturday"
 - `--preset normal` (default) fits one constant tempo per track, like
   rekordbox's Normal analysis; `--preset dynamic` follows tempo changes.
 - `--root auto` (default) writes `.PIONEER` on HFS+ volumes and `PIONEER`
-  elsewhere, as rekordbox does; `--root standard|hidden` forces one.
+  elsewhere, as rekordbox does; `--root standard|hidden` forces one. The file
+  system comes from `diskutil` on macOS and from `/proc/self/mounts` on Linux.
+- `--cache DIR` keeps each track's analysis in DIR (one folder per track:
+  tempo, key, duration, date added and the ANLZ files) and reuses it while the
+  file's path, size and modification time are unchanged, so exporting a
+  growing library again only analyses the new tracks. A cache hit touches the
+  entry's `meta.json`: entries untouched for a while can be deleted by age.
 - Progress goes to stderr; a JSON report (tracks, playlists, files written,
   warnings, verification result) goes to stdout.
 - Exporting again to a stick that already holds an rbxport export updates it

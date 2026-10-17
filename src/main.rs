@@ -1,7 +1,7 @@
 //! Command-line analysis and USB export built on rbxport's crates.
 //!
 //!     rbx-cli analyse FILE... [--preset normal|dynamic] [--beats]
-//!     rbx-cli export SOURCE DESTINATION [--playlist NAME] [--preset ...] [--key camelot|classic]
+//!     rbx-cli export SOURCE DESTINATION [--playlist NAME] [--preset ...] [--key camelot|classic] [--cache DIR]
 //!     rbx-cli rebuild REKORDBOX_USB DESTINATION [--preset ...] [--key camelot|classic]
 //!     rbx-cli inspect USB [--tracks 3] [--anlz 3]
 //!     rbx-cli validate USB [--json]
@@ -30,6 +30,7 @@ use lofty::picture::PictureType;
 use lofty::tag::{Accessor, ItemKey};
 use serde_json::json;
 
+mod cache;
 mod compare;
 mod rebuild;
 mod usb;
@@ -73,6 +74,9 @@ enum Command {
         /// Library folder for a blank volume; auto picks .PIONEER on HFS+.
         #[arg(long, value_enum, default_value_t = Root::Auto)]
         root: Root,
+        /// Keep each track's analysis here and reuse it while the file is unchanged.
+        #[arg(long)]
+        cache: Option<PathBuf>,
     },
     /// Write a rekordbox USB again: same tracks, playlist tree, metadata,
     /// covers and cues, with rbxport's beat grid, key and waveforms.
@@ -148,6 +152,13 @@ enum Preset {
 }
 
 impl Preset {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Dynamic => "dynamic",
+        }
+    }
+
     fn options(self) -> rbl_analysis::AnalysisOptions {
         match self {
             Self::Normal => rbl_analysis::AnalysisPreset::Rekordbox,
@@ -175,8 +186,8 @@ type Result<T> = std::result::Result<T, String>;
 fn main() {
     let outcome = match Cli::parse().command {
         Command::Analyse { files, preset, beats } => analyse_files(&files, preset, beats),
-        Command::Export { source, destination, playlist, preset, key, root } => {
-            export(&source, &destination, playlist.as_deref(), preset, key, root)
+        Command::Export { source, destination, playlist, preset, key, root, cache } => {
+            export(&source, &destination, playlist.as_deref(), preset, key, root, cache.as_deref())
         }
         Command::Rebuild { source, destination, preset, key, root, limit } => {
             rebuild::rebuild(&source, &destination, preset, key, root, limit)
@@ -387,17 +398,71 @@ fn root_for(destination: &Path, root: Root) -> Option<rbl_export::ExportRoot> {
     match root {
         Root::Standard => Some(rbl_export::ExportRoot::Standard),
         Root::Hidden => Some(rbl_export::ExportRoot::Hidden),
-        Root::Auto => {
-            // macOS: `diskutil info` names the type as "Type (Bundle): hfs".
-            let out = std::process::Command::new("diskutil").arg("info").arg(destination).output().ok()?;
-            let info = String::from_utf8_lossy(&out.stdout);
-            let bundle = info.lines().find_map(|l| l.trim().strip_prefix("Type (Bundle):"))?;
-            rbl_export::ExportRoot::for_file_system(bundle.trim())
-        }
+        Root::Auto => rbl_export::ExportRoot::for_file_system(&file_system(destination)?),
     }
 }
 
-fn export(source: &Path, destination: &Path, playlist: Option<&str>, preset: Preset, notation: KeyNotation, root: Root) -> Result<()> {
+/// The file system type of the volume holding `path`, as the OS names it.
+#[cfg(target_os = "macos")]
+fn file_system(path: &Path) -> Option<String> {
+    // `diskutil info` names the type as "Type (Bundle): hfs".
+    let out = std::process::Command::new("diskutil").arg("info").arg(path).output().ok()?;
+    let info = String::from_utf8_lossy(&out.stdout);
+    info.lines().find_map(|l| l.trim().strip_prefix("Type (Bundle):")).map(|t| t.trim().to_owned())
+}
+
+/// The file system type of the volume holding `path`, as the OS names it.
+#[cfg(not(target_os = "macos"))]
+fn file_system(path: &Path) -> Option<String> {
+    // The longest mount point that contains the path: "hfsplus", "vfat", ...
+    let path = path.canonicalize().ok()?;
+    let mounts = std::fs::read_to_string("/proc/self/mounts").ok()?;
+    mounts
+        .lines()
+        .filter_map(|l| {
+            let mut fields = l.split_whitespace();
+            let (_, mount_point, fs) = (fields.next()?, fields.next()?, fields.next()?);
+            // /proc/mounts escapes spaces and other separators as octal.
+            let mount_point = mount_point.replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\");
+            path.starts_with(&mount_point).then(|| (mount_point.len(), fs.to_owned()))
+        })
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, fs)| fs)
+}
+
+/// A track's analysis for an export, from the cache when it holds one.
+/// The elapsed time is None for a cache hit.
+fn analyse_for_export(path: &Path, preset: Preset, cache_root: Option<&Path>, today: &str) -> Result<(cache::Entry, Option<u128>)> {
+    let cached = cache_root.and_then(|root| cache::folder(root, path, preset.name()));
+    if let Some(entry) = cached.as_deref().and_then(cache::load) {
+        return Ok((entry, None));
+    }
+    let a = analyse(path, preset)?;
+    let entry = cache::Entry {
+        bpm_x100: bpm_x100(&a.analysis),
+        key: key_name(&a.analysis, KeyNotation::Classic),
+        camelot: key_name(&a.analysis, KeyNotation::Camelot),
+        duration_secs: a.duration_secs,
+        date_added: today.to_owned(),
+        files: analysis_files(path, &a.analysis),
+    };
+    if let Some(dir) = cached {
+        if let Err(e) = cache::store(&dir, &entry) {
+            eprintln!("  {}: {e}", path.display());
+        }
+    }
+    Ok((entry, Some(a.elapsed_ms)))
+}
+
+fn export(
+    source: &Path,
+    destination: &Path,
+    playlist: Option<&str>,
+    preset: Preset,
+    notation: KeyNotation,
+    root: Root,
+    cache_root: Option<&Path>,
+) -> Result<()> {
     let mut files = Vec::new();
     audio_files(source, &mut files)?;
     files.sort();
@@ -415,7 +480,7 @@ fn export(source: &Path, destination: &Path, playlist: Option<&str>, preset: Pre
     let mut playlists: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     let mut failed = Vec::new();
     for (n, path) in files.iter().enumerate() {
-        let a = match analyse(path, preset) {
+        let (a, elapsed_ms) = match analyse_for_export(path, preset, cache_root, &today) {
             Ok(a) => a,
             Err(e) => {
                 eprintln!("[{}/{}] skipped: {e}", n + 1, files.len());
@@ -432,22 +497,24 @@ fn export(source: &Path, destination: &Path, playlist: Option<&str>, preset: Pre
             }
             None => None,
         };
-        let key = key_name(&a.analysis, notation);
+        let key = match notation {
+            KeyNotation::Classic => a.key,
+            KeyNotation::Camelot => a.camelot,
+        };
         let title = if tags.title.is_empty() {
             path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
         } else {
             tags.title.clone()
         };
-        let bpm_x100 = bpm_x100(&a.analysis);
         eprintln!(
-            "[{}/{}] {} - {}: {:.2} BPM, {}, {:.1}s",
+            "[{}/{}] {} - {}: {:.2} BPM, {}, {}",
             n + 1,
             files.len(),
             tags.artist,
             title,
-            a.analysis.tempo.bpm,
+            f64::from(a.bpm_x100) / 100.0,
             if key.is_empty() { "no key" } else { &key },
-            a.elapsed_ms as f64 / 1000.0
+            elapsed_ms.map_or_else(|| "cached".to_owned(), |ms| format!("{:.1}s", ms as f64 / 1000.0))
         );
         let folder = path.parent().and_then(|p| p.strip_prefix(source).ok()).map(|p| p.to_string_lossy().into_owned());
         let name = match (playlist, folder) {
@@ -466,14 +533,14 @@ fn export(source: &Path, destination: &Path, playlist: Option<&str>, preset: Pre
             label: tags.label,
             key,
             comment: tags.comment,
-            date_added: today.clone(),
-            bpm_x100,
+            date_added: a.date_added,
+            bpm_x100: a.bpm_x100,
             duration_sec: u16::try_from(a.duration_secs.round() as u64).unwrap_or(u16::MAX),
             year: tags.year,
             bitrate: tags.bitrate,
             sample_rate: tags.sample_rate,
             file_size: std::fs::metadata(path).map_or(0, |m| m.len()),
-            analysis: analysis_files(path, &a.analysis),
+            analysis: a.files,
             artwork,
             metadata: rbl_core::ExportMetadata {
                 track_number: tags.track_number,
