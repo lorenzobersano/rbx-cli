@@ -1,9 +1,10 @@
 //! Command-line analysis and USB export built on rbxport's crates.
 //!
 //!     rbx-cli analyse FILE... [--preset normal|dynamic] [--beats]
-//!     rbx-cli export SOURCE DESTINATION [--playlist NAME] [--preset ...] [--key camelot|classic] [--cache DIR]
+//!     rbx-cli export SOURCE DESTINATION [--playlist NAME] [--preset ...] [--key camelot|classic] [--cache DIR] [--cues DIR]
 //!     rbx-cli rebuild REKORDBOX_USB DESTINATION [--preset ...] [--key camelot|classic]
 //!     rbx-cli inspect USB [--tracks 3] [--anlz 3]
+//!     rbx-cli player-edits USB
 //!     rbx-cli validate USB [--json]
 //!     rbx-cli compare-grid USB [--tracks 40] [--skip 3] [--paths FILE...] [--json]
 //!     rbx-cli compare-waveform USB [--tracks 20] [--skip 0] [--paths FILE...] [--png DIR]
@@ -32,6 +33,7 @@ use serde_json::json;
 
 mod cache;
 mod compare;
+mod cues;
 mod rebuild;
 mod usb;
 
@@ -77,6 +79,10 @@ enum Command {
         /// Keep each track's analysis here and reuse it while the file is unchanged.
         #[arg(long)]
         cache: Option<PathBuf>,
+        /// Keep each track's cues here and export them to every stick; cues
+        /// changed on a player are always kept, store or not.
+        #[arg(long)]
+        cues: Option<PathBuf>,
     },
     /// Write a rekordbox USB again: same tracks, playlist tree, metadata,
     /// covers and cues, with rbxport's beat grid, key and waveforms.
@@ -101,6 +107,9 @@ enum Command {
         #[arg(long, default_value_t = 3)]
         anlz: usize,
     },
+    /// List the tracks whose analysis (cues, grid) a player changed since the
+    /// last export, one source path per line.
+    PlayerEdits { usb: PathBuf },
     /// Check an export's pages, references and files; exits 1 on errors.
     Validate {
         usb: PathBuf,
@@ -186,13 +195,14 @@ type Result<T> = std::result::Result<T, String>;
 fn main() {
     let outcome = match Cli::parse().command {
         Command::Analyse { files, preset, beats } => analyse_files(&files, preset, beats),
-        Command::Export { source, destination, playlist, preset, key, root, cache } => {
-            export(&source, &destination, playlist.as_deref(), preset, key, root, cache.as_deref())
+        Command::Export { source, destination, playlist, preset, key, root, cache, cues } => {
+            export(&source, &destination, playlist.as_deref(), preset, key, root, cache.as_deref(), cues.as_deref())
         }
         Command::Rebuild { source, destination, preset, key, root, limit } => {
             rebuild::rebuild(&source, &destination, preset, key, root, limit)
         }
         Command::Inspect { usb, tracks, anlz } => usb::inspect(&usb, tracks, anlz),
+        Command::PlayerEdits { usb } => cues::Cues::new(&usb, None).map(|c| c.edited().iter().for_each(|s| println!("{s}"))),
         Command::Validate { usb, json } => usb::validate(&usb).map(|report| {
             if json {
                 println!("{}", json!({"errors": report.errors, "warnings": report.warnings}));
@@ -462,6 +472,7 @@ fn export(
     notation: KeyNotation,
     root: Root,
     cache_root: Option<&Path>,
+    cue_store: Option<&Path>,
 ) -> Result<()> {
     let mut files = Vec::new();
     audio_files(source, &mut files)?;
@@ -475,6 +486,7 @@ fn export(
     let staging = tempfile::tempdir().map_err(|e| e.to_string())?;
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let source_name = source.file_name().map_or_else(|| "rbx-cli".to_owned(), |n| n.to_string_lossy().into_owned());
+    let mut cues = cues::Cues::new(destination, cue_store)?;
 
     let mut tracks = Vec::new();
     let mut playlists: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -523,8 +535,10 @@ fn export(
             _ => source_name.clone(),
         };
         playlists.entry(name).or_default().push(tracks.len());
+        let id = track_id(path);
         tracks.push(rbl_export::SourceTrack {
-            id: track_id(path),
+            id,
+            cues: cues.for_track(path, id)?,
             source_path: path.clone(),
             title,
             artist: tags.artist,
@@ -566,6 +580,9 @@ fn export(
             ..Default::default()
         })
         .collect();
+    for path in &cues.from_player {
+        eprintln!("cues changed on a player, kept: {path}");
+    }
     write_export(destination, &tracks, &playlists, root, failed)
 }
 

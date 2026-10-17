@@ -14,29 +14,6 @@ use serde_json::json;
 use crate::usb::{on_usb, read_pdb};
 use crate::{analyse, analysis_files, bpm_x100, key_name, read_tags, stage_cover, write_export, KeyNotation, Preset, Result, Root};
 
-/// The cues rekordbox wrote in a track's `PCO2` (the `.EXT`, or the `.DAT`
-/// when there is none), as `rbl_export` takes them.
-fn cues(dat: &Path) -> Vec<rbl_anlz::cues::ExportCue> {
-    let ext = rbl_anlz::sibling(dat, "EXT");
-    let Ok(anlz) = rbl_anlz::Anlz::read(if ext.is_file() { &ext } else { dat }) else { return Vec::new() };
-    anlz.cue_entries()
-        .into_iter()
-        .map(|c| rbl_anlz::cues::ExportCue {
-            // Hot cue slot 1 = A; rbxport's kinds skip 4: A–C are 1–3, D–P 5–17.
-            kind: match c.hot_cue {
-                0..=3 => c.hot_cue as u8,
-                slot => u8::try_from(slot + 1).unwrap_or(u8::MAX),
-            },
-            time_ms: c.time_ms,
-            loop_time_ms: (c.kind == 2).then_some(c.loop_time_ms),
-            color_id: c.color_id,
-            color_code: c.color_code.unwrap_or(0),
-            comment: c.comment.unwrap_or_default(),
-            ..Default::default()
-        })
-        .collect()
-}
-
 /// rekordbox's cover for a track, staged where `rbl_export` looks for its
 /// small and medium versions: `a<id>.jpg` is 80×80 and `a<id>_m.jpg` 240×240.
 fn stage_artwork(source: &Path, path: &str, dir: &Path) -> Option<PathBuf> {
@@ -94,7 +71,7 @@ pub fn rebuild(source: &Path, destination: &Path, preset: Preset, notation: KeyN
             .get(&row.artwork_id)
             .and_then(|path| stage_artwork(source, path, &stage))
             .or_else(|| read_tags(&audio).cover.and_then(|c| stage_cover(&stage, &c).ok()));
-        let cues = cues(&on_usb(source, &row.analyze_path));
+        let cues = crate::cues::read(&on_usb(source, &row.analyze_path));
         let key = key_name(&a.analysis, notation);
         eprintln!(
             "[{}/{}] {} - {}: {:.2} BPM (rekordbox {:.2}), {}, {} cues, {:.1}s",

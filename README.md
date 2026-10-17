@@ -64,6 +64,17 @@ rbx-cli export ~/Music/Saturday /Volumes/USB --playlist "Saturday"
   file's path, size and modification time are unchanged, so exporting a
   growing library again only analyses the new tracks. A cache hit touches the
   entry's `meta.json`: entries untouched for a while can be deleted by age.
+- Hot cues, memory cues and loops set on a player survive the next export.
+  A player keeps them in the track's ANLZ files, which an export writes
+  again; rbxport's manifest on the stick records a hash of every ANLZ file it
+  wrote, so `export` reads the cues back from the files whose bytes no longer
+  match and exports them with the track. `rbx-cli player-edits USB` lists
+  those tracks without writing anything. Grid edits made on a player are not
+  kept.
+- `--cues DIR` also keeps each track's cues in DIR (one JSON file per track)
+  and exports them to every stick: a cue set on one stick reaches the others
+  at their next export, and so does deleting it. A track changed on two
+  sticks between exports keeps the cues of the stick exported last.
 - Progress goes to stderr; a JSON report (tracks, playlists, files written,
   warnings, verification result) goes to stdout.
 - Exporting again to a stick that already holds an rbxport export updates it
